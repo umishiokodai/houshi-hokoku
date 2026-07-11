@@ -250,6 +250,7 @@ function fmtJa(min){
   var h=Math.floor(min/60),m=min%60;
   return m===0? h+'時間' : h+'時間'+m+'分';
 }
+function fmtDate(t){var d=new Date(t);return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate();}
 function svcYearStart(y,m){var s=S.settings.startMonth;return m>=s? y : y-1;}
 function monthsOfYear(sy){
   var list=[],s=S.settings.startMonth;
@@ -263,6 +264,7 @@ function monthsOfYear(sy){
 function cmpYM(a,b){return (a.y*12+a.m)-(b.y*12+b.m);}
 
 /* ================= calculations ================= */
+var CREDIT_CAP=55*60; // 奉仕+考慮で月55hまでが年間の要求時間の対象
 function monthStats(y,m){
   var goal=0,act=0,studies=0,proj=0,n=dim(y,m);
   for(var d=1;d<=n;d++){
@@ -273,24 +275,31 @@ function monthStats(y,m){
     else if(e.g&&k>=TODAY_KEY)proj+=e.g;
     if(e.s)studies=Math.max(studies,e.s);
   }
-  var direct=0,me=S.monthly[y+'-'+pad(m)];
+  var direct=0,credit=0,me=S.monthly[y+'-'+pad(m)];
   if(me){
     if(me.a){direct=me.a;act+=me.a;proj+=me.a;}
+    if(me.c)credit=me.c;
     if(me.s)studies=Math.max(studies,me.s);
   }
-  return{goal:goal,act:act,studies:studies,proj:proj,days:n,direct:direct};
+  // 対象時間 = 奉仕 + 考慮(奉仕と合わせて月55hまで)。奉仕はキャップ対象外
+  var counted=act+Math.min(credit,Math.max(0,CREDIT_CAP-act));
+  var countedProj=proj+Math.min(credit,Math.max(0,CREDIT_CAP-proj));
+  return{goal:goal,act:act,studies:studies,proj:proj,days:n,direct:direct,
+         credit:credit,counted:counted,countedProj:countedProj};
 }
 function yearStats(sy){
-  var ms=monthsOfYear(sy),rows=[],actT=0,projT=0;
+  var ms=monthsOfYear(sy),rows=[],actT=0,projT=0,countedT=0,countedProjT=0,creditT=0;
   var elapsed=0; // completed months
   for(var i=0;i<ms.length;i++){
     var st=monthStats(ms[i].y,ms[i].m);
     var c=cmpYM(ms[i],TODAY);
     rows.push({y:ms[i].y,m:ms[i].m,st:st,rel:c<0?'past':(c===0?'cur':'future')});
     actT+=st.act;projT+=st.proj;
+    countedT+=st.counted;countedProjT+=st.countedProj;creditT+=st.credit;
     if(c<0)elapsed++;
   }
-  return{rows:rows,actT:actT,projT:projT,elapsed:elapsed};
+  return{rows:rows,actT:actT,projT:projT,elapsed:elapsed,
+         countedT:countedT,countedProjT:countedProjT,creditT:creditT};
 }
 
 /* ================= views ================= */
@@ -310,6 +319,20 @@ function render(){
   var app=document.getElementById('app');
   var html='';
   if(!persist)html+='<div class="banner">⚠️ この環境では保存できません(プレビュー表示)。ファイルをダウンロードしてブラウザで開くと、端末に自動保存されます。</div>';
+  else{
+    // backup reminder: data exists but never backed up / last backup >30 days ago
+    var recN=Object.keys(S.entries).length+Object.keys(S.monthly).length;
+    var now=Date.now(),DAY=86400000;
+    var needBk=!S.lastBackup||(now-S.lastBackup)>=30*DAY;
+    var snoozed=S.backupSnooze&&(now-S.backupSnooze)<3*DAY;
+    if(recN>=3&&needBk&&!snoozed&&view!=='set'){
+      html+='<div class="banner">⚠️ '
+        +(S.lastBackup?'最終バックアップから'+Math.floor((now-S.lastBackup)/DAY)+'日経っています。':'バックアップがまだありません。')
+        +'機種変更やアプリ削除で記録が消えます。 '
+        +'<a href="#" style="color:inherit;font-weight:700" onclick="go(\'set\');return false">設定でバックアップ</a>'
+        +' ・ <a href="#" style="color:inherit" onclick="snoozeBackup();return false">あとで</a></div>';
+    }
+  }
   if(view==='cal')html+=renderCal();
   else if(view==='year')html+=renderYear();
   else html+=renderSet();
@@ -321,10 +344,10 @@ function renderCal(){
   var y=cur.y,m=cur.m,st=monthStats(y,m);
   var gMin=S.settings.monthlyGoal*60;
   var isCur=(y===TODAY.y&&m===TODAY.m);
-  var remain=Math.max(0,gMin-st.act);
+  var remain=Math.max(0,gMin-st.counted);
   var remDays=isCur?(st.days-TODAY.d+1):null;
   var perDay=(remDays&&remDays>0)?Math.ceil(remain/remDays):null;
-  var diff=st.proj-gMin;
+  var diff=st.countedProj-gMin;
 
   var h='';
   h+='<div class="monthnav"><h2>'+y+'年'+m+'月</h2><div class="btns">'
@@ -338,25 +361,26 @@ function renderCal(){
   h+='<div class="statrow">'
     +'<span class="pill goal">実績 '+fmtMin(st.act)+'</span>'
     +'<span class="pill plan">予定合計 '+fmtMin(st.goal)+'</span>'
+    +(st.credit?'<span class="pill neutral">考慮 +'+fmtMin(st.credit)+'</span>':'')
     +(st.studies?'<span class="pill neutral">📖 研究 '+st.studies+'</span>':'')
     +'</div>';
 
-  // pace bar (act solid / proj hatched / goal marker)
-  var maxV=Math.max(gMin,st.proj,st.act,1);
-  var pAct=Math.min(100,st.act/maxV*100);
-  var pProj=Math.min(100,st.proj/maxV*100);
+  // pace bar (counted solid / countedProj hatched / goal marker)
+  var maxV=Math.max(gMin,st.countedProj,st.counted,1);
+  var pAct=Math.min(100,st.counted/maxV*100);
+  var pProj=Math.min(100,st.countedProj/maxV*100);
   var pGoal=Math.min(100,gMin/maxV*100);
   h+='<div class="pace"><div class="track">'
     +'<div class="proj" style="width:'+pProj.toFixed(1)+'%"></div>'
     +'<div class="act" style="width:'+pAct.toFixed(1)+'%"></div>'
     +'<div class="mark" style="left:calc('+pGoal.toFixed(1)+'% - 1px)"></div>'
     +'</div><div class="legend">'
-    +'<span><i style="background:var(--goal)"></i>実績</span>'
+    +'<span><i style="background:var(--goal)"></i>'+(st.credit?'対象時間(考慮込み)':'実績')+'</span>'
     +'<span><i style="background:repeating-linear-gradient(-45deg,#E4ECF7,#E4ECF7 3px,#D3E0F2 3px,#D3E0F2 6px)"></i>着地予測(予定込み)</span>'
     +'<span><i style="background:var(--ink);width:3px;border-radius:1px"></i>目標 '+S.settings.monthlyGoal+'h</span>'
     +'</div></div>';
 
-  h+='<div class="hint">着地予測 <b>'+fmtMin(st.proj)+'</b> '
+  h+='<div class="hint">着地予測 <b>'+fmtMin(st.countedProj)+'</b> '
     +(diff>=0?'<span class="pill ok" style="font-size:12px;padding:1px 8px">+'+fmtMin(diff)+'</span>'
              :'<span class="pill miss" style="font-size:12px;padding:1px 8px">−'+fmtMin(-diff)+'</span>')
     +'</div>';
@@ -367,7 +391,13 @@ function renderCal(){
   if(st.direct){
     h+='<div class="hint" style="margin-top:5px">実績のうち <b>'+fmtMin(st.direct)+'</b> は月合計の直接入力分です。</div>';
   }
-  h+='<button class="copybtn sub" style="margin-top:12px" onclick="openMonthly('+y+','+m+')">✏️ 月の合計を直接入力(過去分など)</button>';
+  if(st.credit){
+    var creditEff=st.counted-st.act;
+    h+='<div class="hint" style="margin-top:5px">考慮時間 <b>'+fmtMin(st.credit)+'</b>'
+      +(creditEff<st.credit?'(うち対象 <b>'+fmtMin(creditEff)+'</b> ─ 奉仕と合わせて月55hまで)':'')
+      +'。奉仕時間の実績には含まれません。</div>';
+  }
+  h+='<button class="copybtn sub" style="margin-top:12px" onclick="openMonthly('+y+','+m+')">✏️ 月の合計・考慮時間を入力</button>';
   h+='<button class="copybtn" onclick="copyReport('+y+','+m+')">📋 '+m+'月の報告をコピー</button>';
   h+='</div>';
 
@@ -409,8 +439,8 @@ function renderYear(){
   var sy=yearShown,ys=yearStats(sy);
   var gMin=S.settings.yearlyGoal*60;
   var elapsedGoal=ys.elapsed*S.settings.monthlyGoal*60;
-  var pace=ys.actT-elapsedGoal;
-  var projDiff=ys.projT-gMin;
+  var pace=ys.countedT-elapsedGoal;
+  var projDiff=ys.countedProjT-gMin;
 
   var h='';
   h+='<div class="monthnav"><h2>'+sy+'年度('+sy+'/'+S.settings.startMonth+'〜)</h2><div class="btns">'
@@ -421,40 +451,46 @@ function renderYear(){
   h+='<div class="card"><h3>年間目標 '+S.settings.yearlyGoal+'h</h3>';
   h+='<div class="statrow">'
     +'<span class="pill goal">累計実績 '+fmtMin(ys.actT)+'</span>'
+    +(ys.creditT?'<span class="pill neutral">対象時間 '+fmtMin(ys.countedT)+'</span>':'')
     +(pace>=0?'<span class="pill ok">ペース +'+fmtMin(pace)+'</span>'
              :'<span class="pill miss">ペース −'+fmtMin(-pace)+'</span>')
     +'</div>';
-  var maxV=Math.max(gMin,ys.projT,ys.actT,1);
+  var maxV=Math.max(gMin,ys.countedProjT,ys.countedT,1);
   h+='<div class="pace"><div class="track">'
-    +'<div class="proj" style="width:'+Math.min(100,ys.projT/maxV*100).toFixed(1)+'%"></div>'
-    +'<div class="act" style="width:'+Math.min(100,ys.actT/maxV*100).toFixed(1)+'%"></div>'
+    +'<div class="proj" style="width:'+Math.min(100,ys.countedProjT/maxV*100).toFixed(1)+'%"></div>'
+    +'<div class="act" style="width:'+Math.min(100,ys.countedT/maxV*100).toFixed(1)+'%"></div>'
     +'<div class="mark" style="left:calc('+Math.min(100,gMin/maxV*100).toFixed(1)+'% - 1px)"></div>'
     +'</div><div class="legend">'
-    +'<span><i style="background:var(--goal)"></i>累計実績</span>'
+    +'<span><i style="background:var(--goal)"></i>'+(ys.creditT?'対象時間(考慮込み)':'累計実績')+'</span>'
     +'<span><i style="background:repeating-linear-gradient(-45deg,#E4ECF7,#E4ECF7 3px,#D3E0F2 3px,#D3E0F2 6px)"></i>着地予測(予定込み)</span>'
     +'<span><i style="background:var(--ink);width:3px"></i>'+S.settings.yearlyGoal+'h</span>'
     +'</div></div>';
-  h+='<div class="hint">年度末の着地予測 <b>'+fmtMin(ys.projT)+'</b> '
+  h+='<div class="hint">年度末の着地予測 <b>'+fmtMin(ys.countedProjT)+'</b> '
     +(projDiff>=0?'<span class="pill ok" style="font-size:12px;padding:1px 8px">+'+fmtMin(projDiff)+' 達成見込み</span>'
                  :'<span class="pill miss" style="font-size:12px;padding:1px 8px">−'+fmtMin(-projDiff)+' 不足見込み</span>')
     +'</div>';
   h+='<div class="hint" style="margin-top:4px">ペース差は「経過した月数 × '+S.settings.monthlyGoal+'h」との比較です。</div>';
+  if(ys.creditT){
+    h+='<div class="hint" style="margin-top:4px">考慮時間は奉仕時間には含めず、奉仕と合わせて月55hを上限に対象時間へ加算しています。</div>';
+  }
   h+='</div>';
 
   h+='<div class="card" style="padding:8px 10px"><table class="yr">'
-    +'<tr><th>月</th><th>実績</th><th>予定</th><th>研究</th><th></th></tr>';
+    +'<tr><th>月</th><th>実績</th><th>考慮</th><th>予定</th><th>研究</th><th></th></tr>';
   for(var i=0;i<ys.rows.length;i++){
     var r=ys.rows[i],cls=r.rel==='cur'?'cur':(r.rel==='future'?'future':'');
-    var has=r.st.act>0||r.st.goal>0||r.st.studies>0;
+    var has=r.st.act>0||r.st.goal>0||r.st.studies>0||r.st.credit>0;
     h+='<tr class="'+cls+'">'
       +'<td><a href="#" style="color:inherit;text-decoration:none" onclick="cur={y:'+r.y+',m:'+r.m+'};go(\'cal\');return false">'+r.y+'/'+r.m+'</a></td>'
       +'<td>'+(r.st.act?fmtMin(r.st.act):'–')+'</td>'
+      +'<td>'+(r.st.credit?fmtMin(r.st.credit):'–')+'</td>'
       +'<td>'+(r.st.goal?fmtMin(r.st.goal):'–')+'</td>'
       +'<td>'+(r.st.studies||'–')+'</td>'
       +'<td>'+(has?'<button class="mini" onclick="copyReport('+r.y+','+r.m+')">コピー</button>':'')+'</td>'
       +'</tr>';
   }
-  h+='<tr><td>合計</td><td><b>'+fmtMin(ys.actT)+'</b></td><td colspan="3"></td></tr>';
+  h+='<tr><td>合計</td><td><b>'+fmtMin(ys.actT)+'</b></td>'
+    +'<td>'+(ys.creditT?fmtMin(ys.creditT):'')+'</td><td colspan="3"></td></tr>';
   h+='</table></div>';
   return h;
 }
@@ -479,13 +515,15 @@ function renderSet(){
   h+='<button class="copybtn" onclick="saveSettings()">設定を保存</button>';
   h+='</div>';
   h+='<div class="card"><h3>データ</h3>';
+  h+='<p class="hint" style="margin-bottom:10px">最終バックアップ: <b>'+(S.lastBackup?fmtDate(S.lastBackup):'まだありません')+'</b></p>';
   h+='<div class="rowbtns">'
     +'<button class="copybtn sub" onclick="exportData()">📤 バックアップを書き出す</button>'
     +'<button class="copybtn sub" onclick="document.getElementById(\'impFile\').click()">📥 読み込む</button>'
     +'</div>'
+    +(canShareBackup()?'<button class="copybtn sub" style="margin-top:10px" onclick="shareData()">📱 バックアップを共有(LINE・Drive・メール等)</button>':'')
     +'<input type="file" id="impFile" accept=".json,application/json" style="display:none" onchange="importData(this)">'
     +'<button class="copybtn sub danger" style="margin-top:10px" onclick="wipeData()">すべてのデータを削除</button>';
-  h+='<p class="hint" style="margin-top:10px">データはこの端末のブラウザ内にのみ保存されます。機種変更の前にバックアップを書き出してください。このHTMLファイルをそのまま送れば、他の人も自分専用として使えます(データは共有されません)。</p>';
+  h+='<p class="hint" style="margin-top:10px">データはこの端末のブラウザ内にのみ保存されます。機種変更やアプリ削除で消えるため、定期的にバックアップを書き出す・共有で送っておいてください。このHTMLファイルをそのまま送れば、他の人も自分専用として使えます(データは共有されません)。</p>';
   h+='</div>';
   return h;
 }
@@ -499,14 +537,30 @@ function saveSettings(){
   yearShown=svcYearStart(TODAY.y,TODAY.m);
   save();render();toast('設定を保存しました');
 }
+function backupName(){return 'houshi-hokoku-backup-'+TODAY.y+pad(TODAY.m)+pad(TODAY.d)+'.json';}
+function markBackup(){S.lastBackup=Date.now();delete S.backupSnooze;save();render();}
 function exportData(){
   var blob=new Blob([JSON.stringify(S,null,1)],{type:'application/json'});
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  a.download='houshi-hokoku-backup-'+TODAY.y+pad(TODAY.m)+pad(TODAY.d)+'.json';
+  a.download=backupName();
   document.body.appendChild(a);a.click();a.remove();
+  markBackup();
   toast('バックアップを書き出しました');
 }
+function canShareBackup(){
+  try{
+    return !!(navigator.share&&navigator.canShare
+      &&navigator.canShare({files:[new File(['{}'],backupName(),{type:'application/json'})]}));
+  }catch(e){return false;}
+}
+function shareData(){
+  var f=new File([JSON.stringify(S,null,1)],backupName(),{type:'application/json'});
+  navigator.share({files:[f]}).then(
+    function(){markBackup();toast('バックアップを共有しました');},
+    function(){/* キャンセル時は何もしない */});
+}
+function snoozeBackup(){S.backupSnooze=Date.now();save();render();}
 function importData(inp){
   var f=inp.files&&inp.files[0];if(!f)return;
   var r=new FileReader();
@@ -514,7 +568,9 @@ function importData(inp){
     try{
       var obj=JSON.parse(r.result);
       if(!obj||typeof obj!=='object'||!obj.settings||!obj.entries)throw 0;
-      S=obj;if(!S.monthly)S.monthly={};save();render();toast('データを読み込みました');
+      S=obj;if(!S.monthly)S.monthly={};
+      S.lastBackup=Date.now(); // 読み込んだファイル自体がバックアップ
+      save();render();toast('データを読み込みました');
     }catch(e){toast('読み込めませんでした(ファイル形式を確認)');}
   };
   r.readAsText(f);inp.value='';
@@ -592,11 +648,17 @@ function openMonthly(y,m){
   var me=S.monthly[editYM]||{};
   var hh=me.a?Math.floor(me.a/60):'';
   var mm=me.a?(me.a%60||''):'';
-  var h='<h3>'+y+'年'+m+'月 ─ 合計を直接入力</h3>';
+  var ch=me.c?Math.floor(me.c/60):'';
+  var cm=me.c?(me.c%60||''):'';
+  var h='<h3>'+y+'年'+m+'月 ─ 月単位の入力</h3>';
   h+='<p class="hint" style="margin-bottom:12px">アプリを使い始める前の月など、日ごとの記録がない月の合計をここに入れると、年度の累計・ペース・着地予測に反映されます。日ごとの入力がある月では両方が合算されるのでご注意ください。</p>';
   h+='<div class="seg" style="color:var(--ok)">その月の合計時間</div>'
     +'<div class="timerow"><input id="bH" type="number" inputmode="numeric" min="0" max="744" placeholder="0" value="'+hh+'"><span>h</span>'
     +'<input id="bM" type="number" inputmode="numeric" min="0" max="59" step="5" placeholder="0" value="'+mm+'"><span>min</span></div>';
+  h+='<div class="seg" style="color:var(--goal)">考慮時間</div>'
+    +'<div class="timerow"><input id="cH" type="number" inputmode="numeric" min="0" max="744" placeholder="0" value="'+ch+'"><span>h</span>'
+    +'<input id="cM" type="number" inputmode="numeric" min="0" max="59" step="5" placeholder="0" value="'+cm+'"><span>min</span></div>';
+  h+='<p class="hint" style="margin-top:6px">考慮時間は奉仕時間には含まれません。奉仕時間と合わせて月55時間まで、年間の要求時間の対象になります。</p>';
   h+='<div class="seg">聖書研究</div>'
     +'<div class="step"><button onclick="stepS(-1)" aria-label="減らす">−</button><b id="sVal">'+(me.s||0)+'</b><button onclick="stepS(1)" aria-label="増やす">＋</button></div>';
   h+='<div class="sheetbtns">'
@@ -608,16 +670,15 @@ function openMonthly(y,m){
 }
 function saveMonthly(){
   var a=readMin('bH','bM');
+  var c=readMin('cH','cM');
   var s=parseInt(document.getElementById('sVal').textContent,10)||0;
-  if(a==null&&!s){delete S.monthly[editYM];}
-  else{
-    var me={};
-    if(a!=null&&a>0)me.a=a;
-    if(s)me.s=s;
-    if(!me.a&&!me.s)delete S.monthly[editYM];
-    else S.monthly[editYM]=me;
-  }
-  save();closeSheet();render();toast('月合計を保存しました');
+  var me={};
+  if(a!=null&&a>0)me.a=a;
+  if(c!=null&&c>0)me.c=c;
+  if(s)me.s=s;
+  if(!me.a&&!me.c&&!me.s)delete S.monthly[editYM];
+  else S.monthly[editYM]=me;
+  save();closeSheet();render();toast('月単位の入力を保存しました');
 }
 function delMonthly(){
   delete S.monthly[editYM];
@@ -631,6 +692,7 @@ function reportText(y,m){
   if(S.settings.name)lines.push('氏名: '+S.settings.name);
   lines.push('区分: '+S.settings.role);
   lines.push('時間: '+fmtJa(st.act));
+  if(st.credit)lines.push('考慮時間: '+fmtJa(st.credit));
   lines.push('聖書研究: '+st.studies);
   // collect notes (unique)
   var notes=[];
@@ -672,6 +734,10 @@ if('serviceWorker' in navigator){
   window.addEventListener('load',function(){
     navigator.serviceWorker.register('./sw.js').catch(function(){});
   });
+}
+/* ブラウザにデータの自動削除をしないよう要求(対応環境のみ) */
+if(navigator.storage&&navigator.storage.persist){
+  navigator.storage.persist().catch(function(){});
 }
 </script>
 </body>
