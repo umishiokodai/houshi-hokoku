@@ -250,6 +250,7 @@ function fmtJa(min){
   var h=Math.floor(min/60),m=min%60;
   return m===0? h+'時間' : h+'時間'+m+'分';
 }
+function fmtDate(t){var d=new Date(t);return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate();}
 function svcYearStart(y,m){var s=S.settings.startMonth;return m>=s? y : y-1;}
 function monthsOfYear(sy){
   var list=[],s=S.settings.startMonth;
@@ -318,6 +319,20 @@ function render(){
   var app=document.getElementById('app');
   var html='';
   if(!persist)html+='<div class="banner">⚠️ この環境では保存できません(プレビュー表示)。ファイルをダウンロードしてブラウザで開くと、端末に自動保存されます。</div>';
+  else{
+    // backup reminder: data exists but never backed up / last backup >30 days ago
+    var recN=Object.keys(S.entries).length+Object.keys(S.monthly).length;
+    var now=Date.now(),DAY=86400000;
+    var needBk=!S.lastBackup||(now-S.lastBackup)>=30*DAY;
+    var snoozed=S.backupSnooze&&(now-S.backupSnooze)<3*DAY;
+    if(recN>=3&&needBk&&!snoozed&&view!=='set'){
+      html+='<div class="banner">⚠️ '
+        +(S.lastBackup?'最終バックアップから'+Math.floor((now-S.lastBackup)/DAY)+'日経っています。':'バックアップがまだありません。')
+        +'機種変更やアプリ削除で記録が消えます。 '
+        +'<a href="#" style="color:inherit;font-weight:700" onclick="go(\'set\');return false">設定でバックアップ</a>'
+        +' ・ <a href="#" style="color:inherit" onclick="snoozeBackup();return false">あとで</a></div>';
+    }
+  }
   if(view==='cal')html+=renderCal();
   else if(view==='year')html+=renderYear();
   else html+=renderSet();
@@ -500,13 +515,15 @@ function renderSet(){
   h+='<button class="copybtn" onclick="saveSettings()">設定を保存</button>';
   h+='</div>';
   h+='<div class="card"><h3>データ</h3>';
+  h+='<p class="hint" style="margin-bottom:10px">最終バックアップ: <b>'+(S.lastBackup?fmtDate(S.lastBackup):'まだありません')+'</b></p>';
   h+='<div class="rowbtns">'
     +'<button class="copybtn sub" onclick="exportData()">📤 バックアップを書き出す</button>'
     +'<button class="copybtn sub" onclick="document.getElementById(\'impFile\').click()">📥 読み込む</button>'
     +'</div>'
+    +(canShareBackup()?'<button class="copybtn sub" style="margin-top:10px" onclick="shareData()">📱 バックアップを共有(LINE・Drive・メール等)</button>':'')
     +'<input type="file" id="impFile" accept=".json,application/json" style="display:none" onchange="importData(this)">'
     +'<button class="copybtn sub danger" style="margin-top:10px" onclick="wipeData()">すべてのデータを削除</button>';
-  h+='<p class="hint" style="margin-top:10px">データはこの端末のブラウザ内にのみ保存されます。機種変更の前にバックアップを書き出してください。このHTMLファイルをそのまま送れば、他の人も自分専用として使えます(データは共有されません)。</p>';
+  h+='<p class="hint" style="margin-top:10px">データはこの端末のブラウザ内にのみ保存されます。機種変更やアプリ削除で消えるため、定期的にバックアップを書き出す・共有で送っておいてください。このHTMLファイルをそのまま送れば、他の人も自分専用として使えます(データは共有されません)。</p>';
   h+='</div>';
   return h;
 }
@@ -520,14 +537,30 @@ function saveSettings(){
   yearShown=svcYearStart(TODAY.y,TODAY.m);
   save();render();toast('設定を保存しました');
 }
+function backupName(){return 'houshi-hokoku-backup-'+TODAY.y+pad(TODAY.m)+pad(TODAY.d)+'.json';}
+function markBackup(){S.lastBackup=Date.now();delete S.backupSnooze;save();render();}
 function exportData(){
   var blob=new Blob([JSON.stringify(S,null,1)],{type:'application/json'});
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  a.download='houshi-hokoku-backup-'+TODAY.y+pad(TODAY.m)+pad(TODAY.d)+'.json';
+  a.download=backupName();
   document.body.appendChild(a);a.click();a.remove();
+  markBackup();
   toast('バックアップを書き出しました');
 }
+function canShareBackup(){
+  try{
+    return !!(navigator.share&&navigator.canShare
+      &&navigator.canShare({files:[new File(['{}'],backupName(),{type:'application/json'})]}));
+  }catch(e){return false;}
+}
+function shareData(){
+  var f=new File([JSON.stringify(S,null,1)],backupName(),{type:'application/json'});
+  navigator.share({files:[f]}).then(
+    function(){markBackup();toast('バックアップを共有しました');},
+    function(){/* キャンセル時は何もしない */});
+}
+function snoozeBackup(){S.backupSnooze=Date.now();save();render();}
 function importData(inp){
   var f=inp.files&&inp.files[0];if(!f)return;
   var r=new FileReader();
@@ -535,7 +568,9 @@ function importData(inp){
     try{
       var obj=JSON.parse(r.result);
       if(!obj||typeof obj!=='object'||!obj.settings||!obj.entries)throw 0;
-      S=obj;if(!S.monthly)S.monthly={};save();render();toast('データを読み込みました');
+      S=obj;if(!S.monthly)S.monthly={};
+      S.lastBackup=Date.now(); // 読み込んだファイル自体がバックアップ
+      save();render();toast('データを読み込みました');
     }catch(e){toast('読み込めませんでした(ファイル形式を確認)');}
   };
   r.readAsText(f);inp.value='';
@@ -699,6 +734,10 @@ if('serviceWorker' in navigator){
   window.addEventListener('load',function(){
     navigator.serviceWorker.register('./sw.js').catch(function(){});
   });
+}
+/* ブラウザにデータの自動削除をしないよう要求(対応環境のみ) */
+if(navigator.storage&&navigator.storage.persist){
+  navigator.storage.persist().catch(function(){});
 }
 </script>
 </body>
