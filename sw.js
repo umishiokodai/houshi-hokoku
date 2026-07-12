@@ -1,5 +1,5 @@
 /* 奉仕報告 PWA service worker */
-var CACHE = 'houshi-hokoku-v4';
+var CACHE = 'houshi-hokoku-v5';
 var ASSETS = [
   './',
   './index.html',

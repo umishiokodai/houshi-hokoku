@@ -28,11 +28,12 @@
   --radius:14px;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html,body{height:100%}
+html{height:100%}
+body{min-height:100%}
 body{
   font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Yu Gothic UI",sans-serif;
   background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5;
-  padding-bottom:calc(70px + env(safe-area-inset-bottom));
+  padding-bottom:calc(100px + env(safe-area-inset-bottom));
 }
 button{font-family:inherit;font-size:inherit;border:none;background:none;cursor:pointer;color:inherit}
 input,select,textarea{font-family:inherit;font-size:16px;color:var(--ink)}
@@ -265,14 +266,42 @@ function cmpYM(a,b){return (a.y*12+a.m)-(b.y*12+b.m);}
 
 /* ================= calculations ================= */
 var CREDIT_CAP=55*60; // 奉仕+考慮で月55hまでが年間の要求時間の対象
+function firstDataYM(){
+  var best=null,k;
+  function upd(y,m){if(!best||cmpYM({y:y,m:m},best)<0)best={y:y,m:m};}
+  for(k in S.entries)upd(+k.slice(0,4),+k.slice(5,7));
+  for(k in S.monthly)upd(+k.slice(0,4),+k.slice(5,7));
+  return best;
+}
+function rawAct(y,m){
+  var act=0,n=dim(y,m);
+  for(var d=1;d<=n;d++){
+    var e=S.entries[keyOf(y,m,d)];
+    if(e&&e.a!=null)act+=e.a;
+  }
+  var me=S.monthly[y+'-'+pad(m)];
+  if(me&&me.a)act+=me.a;
+  return act;
+}
+// 最古データ月から積んだ「1時間未満の端数」の (y,m) への繰入分数
+function carryInto(y,m){
+  var f=firstDataYM();
+  if(!f)return 0;
+  var c=0,cur={y:f.y,m:f.m},tgt={y:y,m:m};
+  while(cmpYM(cur,tgt)<0){
+    c=(c+rawAct(cur.y,cur.m))%60;
+    cur.m++;if(cur.m>12){cur.m=1;cur.y++;}
+  }
+  return c;
+}
 function monthStats(y,m){
-  var goal=0,act=0,studies=0,proj=0,n=dim(y,m);
+  var goal=0,act=0,studies=0,proj=0,fg=0,n=dim(y,m);
   for(var d=1;d<=n;d++){
     var k=keyOf(y,m,d),e=S.entries[k];
     if(!e)continue;
     if(e.g)goal+=e.g;
     if(e.a!=null){act+=e.a;proj+=e.a;}
-    else if(e.g&&k>=TODAY_KEY)proj+=e.g;
+    else if(e.g&&k>=TODAY_KEY){proj+=e.g;fg+=e.g;}
     if(e.s)studies=Math.max(studies,e.s);
   }
   var direct=0,credit=0,me=S.monthly[y+'-'+pad(m)];
@@ -281,25 +310,42 @@ function monthStats(y,m){
     if(me.c)credit=me.c;
     if(me.s)studies=Math.max(studies,me.s);
   }
+  // 今月で予定が未入力なら、日割りペースで月末を外挿
+  var paced=false;
+  if(y===TODAY.y&&m===TODAY.m&&fg===0&&act>0&&TODAY.d<n){
+    proj=act+Math.round(act/TODAY.d*(n-TODAY.d));
+    paced=true;
+  }
   // 対象時間 = 奉仕 + 考慮(奉仕と合わせて月55hまで)。奉仕はキャップ対象外
   var counted=act+Math.min(credit,Math.max(0,CREDIT_CAP-act));
   var countedProj=proj+Math.min(credit,Math.max(0,CREDIT_CAP-proj));
+  // 報告値: 前月からの繰り越しを含む整数時間。端数は翌月へ
+  var carryIn=carryInto(y,m);
+  var carryOut=(act+carryIn)%60;
+  var reportMin=act+carryIn-carryOut;
   return{goal:goal,act:act,studies:studies,proj:proj,days:n,direct:direct,
-         credit:credit,counted:counted,countedProj:countedProj};
+         credit:credit,counted:counted,countedProj:countedProj,paced:paced,
+         carryIn:carryIn,carryOut:carryOut,reportMin:reportMin};
 }
 function yearStats(sy){
-  var ms=monthsOfYear(sy),rows=[],actT=0,projT=0,countedT=0,countedProjT=0,creditT=0;
+  var ms=monthsOfYear(sy),rows=[],actT=0,projT=0,countedT=0,countedProjT=0,creditT=0,reportT=0;
   var elapsed=0; // completed months
+  var goalFilled=false; // 未入力の将来月を月間目標で換算したか
   for(var i=0;i<ms.length;i++){
     var st=monthStats(ms[i].y,ms[i].m);
     var c=cmpYM(ms[i],TODAY);
     rows.push({y:ms[i].y,m:ms[i].m,st:st,rel:c<0?'past':(c===0?'cur':'future')});
     actT+=st.act;projT+=st.proj;
-    countedT+=st.counted;countedProjT+=st.countedProj;creditT+=st.credit;
+    countedT+=st.counted;creditT+=st.credit;reportT+=st.reportMin;
+    // 着地予測: 過去月=実績、今月=月の予測、未入力の将来月=月間目標で換算
+    if(c>0&&st.countedProj===0&&st.act===0&&st.goal===0&&st.credit===0){
+      countedProjT+=S.settings.monthlyGoal*60;goalFilled=true;
+    }else countedProjT+=st.countedProj;
     if(c<0)elapsed++;
   }
   return{rows:rows,actT:actT,projT:projT,elapsed:elapsed,
-         countedT:countedT,countedProjT:countedProjT,creditT:creditT};
+         countedT:countedT,countedProjT:countedProjT,creditT:creditT,
+         reportT:reportT,goalFilled:goalFilled};
 }
 
 /* ================= views ================= */
@@ -376,14 +422,18 @@ function renderCal(){
     +'<div class="mark" style="left:calc('+pGoal.toFixed(1)+'% - 1px)"></div>'
     +'</div><div class="legend">'
     +'<span><i style="background:var(--goal)"></i>'+(st.credit?'対象時間(考慮込み)':'実績')+'</span>'
-    +'<span><i style="background:repeating-linear-gradient(-45deg,#E4ECF7,#E4ECF7 3px,#D3E0F2 3px,#D3E0F2 6px)"></i>着地予測(予定込み)</span>'
+    +'<span><i style="background:repeating-linear-gradient(-45deg,#E4ECF7,#E4ECF7 3px,#D3E0F2 3px,#D3E0F2 6px)"></i>着地予測</span>'
     +'<span><i style="background:var(--ink);width:3px;border-radius:1px"></i>目標 '+S.settings.monthlyGoal+'h</span>'
     +'</div></div>';
 
   h+='<div class="hint">着地予測 <b>'+fmtMin(st.countedProj)+'</b> '
     +(diff>=0?'<span class="pill ok" style="font-size:12px;padding:1px 8px">+'+fmtMin(diff)+'</span>'
              :'<span class="pill miss" style="font-size:12px;padding:1px 8px">−'+fmtMin(-diff)+'</span>')
+    +(st.paced?' <small style="color:var(--muted)">現在のペース換算</small>':'')
     +'</div>';
+  if(st.carryIn||st.carryOut){
+    h+='<div class="hint" style="margin-top:5px">前月から繰り越し <b>'+st.carryIn+'分</b> ・ 今月の報告値 <b>'+fmtJa(st.reportMin)+'</b> ・ 翌月へ <b>'+st.carryOut+'分</b></div>';
+  }
   if(isCur){
     h+='<div class="hint" style="margin-top:5px">残り <b>'+fmtMin(remain)+'</b>(あと'+remDays+'日'
       +(perDay!=null&&remain>0?' ・ 1日あたり <b>'+fmtMin(perDay)+'</b>':'')+')</div>';
@@ -409,7 +459,13 @@ function renderCal(){
   h+='<div class="cal"><div class="dow"><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div>土</div><div>日</div></div><div class="grid">';
   for(var i=0;i<rowsN*7;i++){
     var d=i-lead+1;
-    if(d<1||d>st.days){h+='<div class="cell out"></div>';continue;}
+    if(d<1||d>st.days){
+      // 1日の直前のマスに前月からの繰り越しを表示
+      if(d===0&&st.carryIn>0){
+        h+='<div class="cell out"><div class="d" style="font-size:10px">繰越</div><span class="tag" style="background:var(--muted)">'+st.carryIn+"'"+'</span></div>';
+      }else h+='<div class="cell out"></div>';
+      continue;
+    }
     var k=keyOf(y,m,d),e=S.entries[k];
     var cls='cell'+(k===TODAY_KEY?' today':'');
     h+='<div class="'+cls+'" onclick="openDay(\''+k+'\')" role="button" tabindex="0" onkeydown="if(event.key===\'Enter\')openDay(\''+k+'\')">';
@@ -462,7 +518,7 @@ function renderYear(){
     +'<div class="mark" style="left:calc('+Math.min(100,gMin/maxV*100).toFixed(1)+'% - 1px)"></div>'
     +'</div><div class="legend">'
     +'<span><i style="background:var(--goal)"></i>'+(ys.creditT?'対象時間(考慮込み)':'累計実績')+'</span>'
-    +'<span><i style="background:repeating-linear-gradient(-45deg,#E4ECF7,#E4ECF7 3px,#D3E0F2 3px,#D3E0F2 6px)"></i>着地予測(予定込み)</span>'
+    +'<span><i style="background:repeating-linear-gradient(-45deg,#E4ECF7,#E4ECF7 3px,#D3E0F2 3px,#D3E0F2 6px)"></i>着地予測</span>'
     +'<span><i style="background:var(--ink);width:3px"></i>'+S.settings.yearlyGoal+'h</span>'
     +'</div></div>';
   h+='<div class="hint">年度末の着地予測 <b>'+fmtMin(ys.countedProjT)+'</b> '
@@ -470,6 +526,9 @@ function renderYear(){
                  :'<span class="pill miss" style="font-size:12px;padding:1px 8px">−'+fmtMin(-projDiff)+' 不足見込み</span>')
     +'</div>';
   h+='<div class="hint" style="margin-top:4px">ペース差は「経過した月数 × '+S.settings.monthlyGoal+'h」との比較です。</div>';
+  if(ys.goalFilled){
+    h+='<div class="hint" style="margin-top:4px">着地予測は、予定のない今月分を現在のペース、未入力の将来月を月間目標'+S.settings.monthlyGoal+'hとして換算しています。</div>';
+  }
   if(ys.creditT){
     h+='<div class="hint" style="margin-top:4px">考慮時間は奉仕時間には含めず、奉仕と合わせて月55hを上限に対象時間へ加算しています。</div>';
   }
@@ -482,16 +541,20 @@ function renderYear(){
     var has=r.st.act>0||r.st.goal>0||r.st.studies>0||r.st.credit>0;
     h+='<tr class="'+cls+'">'
       +'<td><a href="#" style="color:inherit;text-decoration:none" onclick="cur={y:'+r.y+',m:'+r.m+'};go(\'cal\');return false">'+r.y+'/'+r.m+'</a></td>'
-      +'<td>'+(r.st.act?fmtMin(r.st.act):'–')+'</td>'
+      +'<td>'+(r.st.act?fmtMin(r.st.reportMin):'–')+'</td>'
       +'<td>'+(r.st.credit?fmtMin(r.st.credit):'–')+'</td>'
       +'<td>'+(r.st.goal?fmtMin(r.st.goal):'–')+'</td>'
       +'<td>'+(r.st.studies||'–')+'</td>'
       +'<td>'+(has?'<button class="mini" onclick="copyReport('+r.y+','+r.m+')">コピー</button>':'')+'</td>'
       +'</tr>';
   }
-  h+='<tr><td>合計</td><td><b>'+fmtMin(ys.actT)+'</b></td>'
+  h+='<tr><td>合計</td><td><b>'+fmtMin(ys.reportT)+'</b></td>'
     +'<td>'+(ys.creditT?fmtMin(ys.creditT):'')+'</td><td colspan="3"></td></tr>';
-  h+='</table></div>';
+  h+='</table>';
+  var lastCarry=ys.rows[11].st.carryOut;
+  h+='<p class="hint" style="margin:6px 4px 4px">実績は報告値(前月からの繰り越しを含む整数時間)です。'
+    +(lastCarry?'年度末時点の翌月への繰り越しは'+lastCarry+'分です。':'')+'</p>';
+  h+='</div>';
   return h;
 }
 
@@ -691,7 +754,7 @@ function reportText(y,m){
   var lines=['【奉仕報告】'+y+'年'+m+'月'];
   if(S.settings.name)lines.push('氏名: '+S.settings.name);
   lines.push('区分: '+S.settings.role);
-  lines.push('時間: '+fmtJa(st.act));
+  lines.push('時間: '+fmtJa(st.reportMin));
   if(st.credit)lines.push('考慮時間: '+fmtJa(st.credit));
   lines.push('聖書研究: '+st.studies);
   // collect notes (unique)
