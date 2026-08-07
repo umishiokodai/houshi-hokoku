@@ -226,12 +226,16 @@ function save(){
   try{localStorage.setItem(LS_KEY,JSON.stringify(S));}catch(e){}
 }
 var S=loadState()||{
-  settings:{name:'',role:'正規開拓者',monthlyGoal:50,yearlyGoal:600,startMonth:9},
+  settings:{name:'',role:'正規開拓者',monthlyGoal:50,yearlyGoal:600,startMonth:9,useDailyGoal:false},
   entries:{}
 };
 if(!S.settings)S.settings={name:'',role:'正規開拓者',monthlyGoal:50,yearlyGoal:600,startMonth:9};
 if(!S.entries)S.entries={};
 if(!S.monthly)S.monthly={};
+// 既存の保存データに設定が無い場合は、これまでどおり日ごとの目標を使う
+if(S.settings.useDailyGoal===undefined)S.settings.useDailyGoal=true;
+// 日ごとの目標(予定)を使うか。オフでも entries の g は消さずに残す
+function useDG(){return !!S.settings.useDailyGoal;}
 
 /* ================= date helpers ================= */
 function pad(n){return (n<10?'0':'')+n;}
@@ -300,13 +304,14 @@ function carryInto(y,m){
   return c;
 }
 function monthStats(y,m){
+  var ug=useDG(); // オフのときは残っている g を集計にも予測にも使わない
   var goal=0,act=0,studies=0,proj=0,fg=0,n=dim(y,m);
   for(var d=1;d<=n;d++){
     var k=keyOf(y,m,d),e=S.entries[k];
     if(!e)continue;
-    if(e.g)goal+=e.g;
+    if(ug&&e.g)goal+=e.g;
     if(e.a!=null){act+=e.a;proj+=e.a;}
-    else if(e.g&&k>=TODAY_KEY){proj+=e.g;fg+=e.g;}
+    else if(ug&&e.g&&k>=TODAY_KEY){proj+=e.g;fg+=e.g;}
     if(e.s)studies=Math.max(studies,e.s);
   }
   var direct=0,credit=0,me=S.monthly[y+'-'+pad(m)];
@@ -436,7 +441,7 @@ function renderCal(){
     +'<span class="pill goal">実績 '+fmtMin(st.act)+'</span>'
     +(yp.prevElapsed?(yp.prevPace>=0?'<span class="pill ok">前月まで +'+fmtMin(yp.prevPace)+'</span>'
                                     :'<span class="pill miss">前月まで −'+fmtMin(-yp.prevPace)+'</span>'):'')
-    +'<span class="pill plan">予定合計 '+fmtMin(st.goal)+'</span>'
+    +(useDG()?'<span class="pill plan">予定合計 '+fmtMin(st.goal)+'</span>':'')
     +(st.credit?'<span class="pill neutral">考慮 +'+fmtMin(st.credit)+'</span>':'')
     +(st.studies?'<span class="pill neutral">📖 研究 '+st.studies+'</span>':'')
     +'</div>';
@@ -504,9 +509,9 @@ function renderCal(){
     h+='<div class="'+cls+'" onclick="openDay(\''+k+'\')" role="button" tabindex="0" onkeydown="if(event.key===\'Enter\')openDay(\''+k+'\')">';
     h+='<div class="d">'+d+'</div>';
     if(e){
-      if(e.g)h+='<span class="tag g">'+fmtMin(e.g)+'</span>';
+      if(useDG()&&e.g)h+='<span class="tag g">'+fmtMin(e.g)+'</span>';
       if(e.a!=null){
-        var okc=(!e.g||e.a>=e.g)?'a-ok':'a-miss';
+        var okc=(!useDG()||!e.g||e.a>=e.g)?'a-ok':'a-miss';
         h+='<span class="tag '+okc+'">'+fmtMin(e.a)+'</span>';
       }
       if(e.n||e.s)h+='<span class="dot"></span>';
@@ -514,7 +519,9 @@ function renderCal(){
     h+='</div>';
   }
   h+='</div></div>';
-  h+='<p class="hint" style="margin-top:10px">日付をタップして目標(青)と実績を入力。実績は目標達成で<span style="color:var(--ok);font-weight:700">緑</span>、未達で<span style="color:var(--miss);font-weight:700">赤</span>で表示されます。</p>';
+  h+=useDG()
+    ?'<p class="hint" style="margin-top:10px">日付をタップして目標(青)と実績を入力。実績は目標達成で<span style="color:var(--ok);font-weight:700">緑</span>、未達で<span style="color:var(--miss);font-weight:700">赤</span>で表示されます。</p>'
+    :'<p class="hint" style="margin-top:10px">日付をタップして実績を入力します。メモや聖書研究を記録した日には右上に点が付きます。</p>';
   return h;
 }
 function moveMonth(dir){
@@ -567,15 +574,16 @@ function renderYear(){
     h+='<div class="hint" style="margin-top:4px">ペース差は「経過した月数 × '+S.settings.monthlyGoal+'h」との比較です。</div>';
   }
   if(ys.goalFilled){
-    h+='<div class="hint" style="margin-top:4px">着地予測は、予定のない今月分を現在のペース、未入力の将来月を月間目標'+S.settings.monthlyGoal+'hとして換算しています。</div>';
+    h+='<div class="hint" style="margin-top:4px">着地予測は、'+(useDG()?'予定のない今月分':'今月分')+'を現在のペース、未入力の将来月を月間目標'+S.settings.monthlyGoal+'hとして換算しています。</div>';
   }
   if(ys.creditT){
     h+='<div class="hint" style="margin-top:4px">考慮時間は奉仕時間には含めず、奉仕と合わせて月55hを上限に対象時間へ加算しています。</div>';
   }
   h+='</div>';
 
+  var ug=useDG();
   h+='<div class="card" style="padding:8px 10px"><table class="yr">'
-    +'<tr><th>月</th><th>実績</th><th>考慮</th><th>予定</th><th>研究</th><th></th></tr>';
+    +'<tr><th>月</th><th>実績</th><th>考慮</th>'+(ug?'<th>予定</th>':'')+'<th>研究</th><th></th></tr>';
   for(var i=0;i<ys.rows.length;i++){
     var r=ys.rows[i],cls=r.rel==='cur'?'cur':(r.rel==='future'?'future':'');
     var has=r.st.act>0||r.st.goal>0||r.st.studies>0||r.st.credit>0;
@@ -583,13 +591,13 @@ function renderYear(){
       +'<td><a href="#" style="color:inherit;text-decoration:none" onclick="cur={y:'+r.y+',m:'+r.m+'};go(\'cal\');return false">'+r.y+'/'+r.m+'</a></td>'
       +'<td>'+(r.st.act?fmtMin(r.st.reportMin):'–')+'</td>'
       +'<td>'+(r.st.credit?fmtMin(r.st.credit):'–')+'</td>'
-      +'<td>'+(r.st.goal?fmtMin(r.st.goal):'–')+'</td>'
+      +(ug?'<td>'+(r.st.goal?fmtMin(r.st.goal):'–')+'</td>':'')
       +'<td>'+(r.st.studies||'–')+'</td>'
       +'<td>'+(has?'<button class="mini" onclick="copyReport('+r.y+','+r.m+')">コピー</button>':'')+'</td>'
       +'</tr>';
   }
   h+='<tr><td>合計</td><td><b>'+fmtMin(ys.reportT)+'</b></td>'
-    +'<td>'+(ys.creditT?fmtMin(ys.creditT):'')+'</td><td colspan="3"></td></tr>';
+    +'<td>'+(ys.creditT?fmtMin(ys.creditT):'')+'</td><td colspan="'+(ug?3:2)+'"></td></tr>';
   h+='</table>';
   var lastCarry=ys.rows[11].st.carryOut;
   h+='<p class="hint" style="margin:6px 4px 4px">実績は報告値(前月からの繰り越しを含む整数時間)です。'
@@ -615,6 +623,11 @@ function renderSet(){
   h+='<div class="field"><label>年度の開始月</label><select id="setSM">';
   for(var m=1;m<=12;m++)h+='<option value="'+m+'"'+(m===s.startMonth?' selected':'')+'>'+m+'月</option>';
   h+='</select></div>';
+  h+='<div class="field" style="margin-bottom:6px"><label>日ごとの目標(予定)</label><select id="setUDG">'
+    +'<option value="0"'+(!s.useDailyGoal?' selected':'')+'>使わない(シンプル表示)</option>'
+    +'<option value="1"'+(s.useDailyGoal?' selected':'')+'>使う</option>'
+    +'</select></div>';
+  h+='<p class="hint" style="margin-bottom:14px">「使う」にすると、日付ごとに予定時間を入れてカレンダーで達成・未達を確認できます。「使わない」では実績の入力だけになり、画面が簡素になります。入力済みの予定は消えないので、切り替えれば元に戻ります。</p>';
   h+='<button class="copybtn" onclick="saveSettings()">設定を保存</button>';
   h+='</div>';
   h+='<div class="card"><h3>データ</h3>';
@@ -637,6 +650,7 @@ function saveSettings(){
   s.monthlyGoal=Math.max(1,parseInt(document.getElementById('setMG').value,10)||50);
   s.yearlyGoal=Math.max(1,parseInt(document.getElementById('setYG').value,10)||600);
   s.startMonth=parseInt(document.getElementById('setSM').value,10)||9;
+  s.useDailyGoal=document.getElementById('setUDG').value==='1';
   yearShown=svcYearStart(TODAY.y,TODAY.m);
   save();render();toast('設定を保存しました');
 }
@@ -672,6 +686,8 @@ function importData(inp){
       var obj=JSON.parse(r.result);
       if(!obj||typeof obj!=='object'||!obj.settings||!obj.entries)throw 0;
       S=obj;if(!S.monthly)S.monthly={};
+      // 古いバックアップには設定が無いので、これまでどおりの表示にする
+      if(S.settings.useDailyGoal===undefined)S.settings.useDailyGoal=true;
       S.lastBackup=Date.now(); // 読み込んだファイル自体がバックアップ
       save();render();toast('データを読み込みました');
     }catch(e){toast('読み込めませんでした(ファイル形式を確認)');}
@@ -680,7 +696,7 @@ function importData(inp){
 }
 function wipeData(){
   if(!confirm('すべての記録と設定を削除します。よろしいですか?'))return;
-  S={settings:{name:'',role:'正規開拓者',monthlyGoal:50,yearlyGoal:600,startMonth:9},entries:{},monthly:{}};
+  S={settings:{name:'',role:'正規開拓者',monthlyGoal:50,yearlyGoal:600,startMonth:9,useDailyGoal:false},entries:{},monthly:{}};
   save();render();toast('削除しました');
 }
 
@@ -695,10 +711,16 @@ function openDay(k){
   function hm(min){return min==null?['','']:[Math.floor(min/60)||'',min%60||''];}
   var g=hm(e.g),a=hm(e.a);
   var h='<h3>'+(+p[0])+'年'+(+p[1])+'月'+(+p[2])+'日('+yobi+')</h3>';
-  h+='<div class="seg" style="color:var(--goal)">目標時間(予定)</div>'
-    +'<div class="timerow"><input id="gH" type="number" inputmode="numeric" min="0" max="24" placeholder="0" value="'+g[0]+'"><span>h</span>'
-    +'<input id="gM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+g[1]+'"><span>min</span>'
-    +'<button class="quickclear" onclick="document.getElementById(\'gH\').value=\'\';document.getElementById(\'gM\').value=\'\'">クリア</button></div>';
+  if(useDG()){
+    h+='<div class="seg" style="color:var(--goal)">目標時間(予定)</div>'
+      +'<div class="timerow"><input id="gH" type="number" inputmode="numeric" min="0" max="24" placeholder="0" value="'+g[0]+'"><span>h</span>'
+      +'<input id="gM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+g[1]+'"><span>min</span>'
+      +'<button class="quickclear" onclick="document.getElementById(\'gH\').value=\'\';document.getElementById(\'gM\').value=\'\'">クリア</button></div>';
+  }else if(e.g){
+    // 設定オフでも過去に入れた予定は残っているので、その旨を伝える
+    h+='<p class="hint" style="margin-bottom:12px">この日には予定 <b>'+fmtMin(e.g)+'</b> が保存されています。'
+      +'設定で「日ごとの目標」を使うと編集できます。</p>';
+  }
   h+='<div class="seg" style="color:var(--ok)">実績時間</div>'
     +'<div class="timerow"><input id="aH" type="number" inputmode="numeric" min="0" max="24" placeholder="0" value="'+a[0]+'"><span>h</span>'
     +'<input id="aM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+a[1]+'"><span>min</span>'
@@ -724,7 +746,10 @@ function readMin(hId,mId){
   return v<0?0:v;
 }
 function saveDay(){
-  var g=readMin('gH','gM'),a=readMin('aH','aM');
+  // オフのときは目標欄をDOMに出していないので、保存済みの値をそのまま引き継ぐ
+  var prev=S.entries[editKey]||{};
+  var g=useDG()?readMin('gH','gM'):(prev.g==null?null:prev.g);
+  var a=readMin('aH','aM');
   var s=parseInt(document.getElementById('sVal').textContent,10)||0;
   var n=document.getElementById('nVal').value.trim();
   if(g==null&&a==null&&!s&&!n){delete S.entries[editKey];}
