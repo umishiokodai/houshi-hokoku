@@ -266,7 +266,8 @@ function cmpYM(a,b){return (a.y*12+a.m)-(b.y*12+b.m);}
 
 /* ================= calculations ================= */
 var CREDIT_CAP=55*60; // 奉仕+考慮で月55hまでが年間の要求時間の対象
-// 概算値は入力の刻み(5分)に合わせて丸める。実績や報告値は丸めない
+// 入力・実績・報告値は1分単位のまま。日割りの外挿など「概算にすぎない値」だけ
+// 5分単位で表示し、実際より精密に見えないようにする
 var STEP=5;
 function roundStep(min){return Math.round(min/STEP)*STEP;}
 function ceilStep(min){return Math.ceil(min/STEP)*STEP;}
@@ -323,6 +324,8 @@ function monthStats(y,m){
   // 対象時間 = 奉仕 + 考慮(奉仕と合わせて月55hまで)。奉仕はキャップ対象外
   var counted=act+Math.min(credit,Math.max(0,CREDIT_CAP-act));
   var countedProj=proj+Math.min(credit,Math.max(0,CREDIT_CAP-proj));
+  // ペース換算を含む予測は、考慮時間を足したあとも5分単位に揃える
+  if(paced)countedProj=roundStep(countedProj);
   // 報告値: 前月からの繰り越しを含む整数時間。端数は翌月へ
   var carryIn=carryInto(y,m);
   var carryOut=(act+carryIn)%60;
@@ -694,11 +697,11 @@ function openDay(k){
   var h='<h3>'+(+p[0])+'年'+(+p[1])+'月'+(+p[2])+'日('+yobi+')</h3>';
   h+='<div class="seg" style="color:var(--goal)">目標時間(予定)</div>'
     +'<div class="timerow"><input id="gH" type="number" inputmode="numeric" min="0" max="24" placeholder="0" value="'+g[0]+'"><span>h</span>'
-    +'<input id="gM" type="number" inputmode="numeric" min="0" max="59" step="5" placeholder="0" value="'+g[1]+'"><span>min</span>'
+    +'<input id="gM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+g[1]+'"><span>min</span>'
     +'<button class="quickclear" onclick="document.getElementById(\'gH\').value=\'\';document.getElementById(\'gM\').value=\'\'">クリア</button></div>';
   h+='<div class="seg" style="color:var(--ok)">実績時間</div>'
     +'<div class="timerow"><input id="aH" type="number" inputmode="numeric" min="0" max="24" placeholder="0" value="'+a[0]+'"><span>h</span>'
-    +'<input id="aM" type="number" inputmode="numeric" min="0" max="59" step="5" placeholder="0" value="'+a[1]+'"><span>min</span>'
+    +'<input id="aM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+a[1]+'"><span>min</span>'
     +'<button class="quickclear" onclick="document.getElementById(\'aH\').value=\'\';document.getElementById(\'aM\').value=\'\'">クリア</button></div>';
   h+='<div class="seg">聖書研究(その月に司会した人数)</div>'
     +'<div class="step"><button onclick="stepS(-1)" aria-label="減らす">−</button><b id="sVal">'+(e.s||0)+'</b><button onclick="stepS(1)" aria-label="増やす">＋</button></div>';
@@ -754,10 +757,10 @@ function openMonthly(y,m){
   h+='<p class="hint" style="margin-bottom:12px">アプリを使い始める前の月など、日ごとの記録がない月の合計をここに入れると、年度の累計・ペース・着地予測に反映されます。日ごとの入力がある月では両方が合算されるのでご注意ください。</p>';
   h+='<div class="seg" style="color:var(--ok)">その月の合計時間</div>'
     +'<div class="timerow"><input id="bH" type="number" inputmode="numeric" min="0" max="744" placeholder="0" value="'+hh+'"><span>h</span>'
-    +'<input id="bM" type="number" inputmode="numeric" min="0" max="59" step="5" placeholder="0" value="'+mm+'"><span>min</span></div>';
+    +'<input id="bM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+mm+'"><span>min</span></div>';
   h+='<div class="seg" style="color:var(--goal)">考慮時間</div>'
     +'<div class="timerow"><input id="cH" type="number" inputmode="numeric" min="0" max="744" placeholder="0" value="'+ch+'"><span>h</span>'
-    +'<input id="cM" type="number" inputmode="numeric" min="0" max="59" step="5" placeholder="0" value="'+cm+'"><span>min</span></div>';
+    +'<input id="cM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+cm+'"><span>min</span></div>';
   h+='<p class="hint" style="margin-top:6px">考慮時間は奉仕時間には含まれません。奉仕時間と合わせて月55時間まで、年間の要求時間の対象になります。</p>';
   h+='<div class="seg">聖書研究</div>'
     +'<div class="step"><button onclick="stepS(-1)" aria-label="減らす">−</button><b id="sVal">'+(me.s||0)+'</b><button onclick="stepS(1)" aria-label="増やす">＋</button></div>';
