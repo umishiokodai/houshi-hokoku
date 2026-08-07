@@ -327,6 +327,24 @@ function monthStats(y,m){
          credit:credit,counted:counted,countedProj:countedProj,paced:paced,
          carryIn:carryIn,carryOut:carryOut,reportMin:reportMin};
 }
+// (y,m) が属する奉仕年度で、その月より前の実績と今月の必要時間を求める
+function yearProgress(y,m){
+  var sy=svcYearStart(y,m),ms=monthsOfYear(sy),tgt={y:y,m:m};
+  var prevT=0,prevElapsed=0,idx=0;
+  for(var i=0;i<ms.length;i++){
+    if(cmpYM(ms[i],tgt)<0){prevT+=monthStats(ms[i].y,ms[i].m).counted;prevElapsed++;}
+    else if(cmpYM(ms[i],tgt)===0)idx=i;
+  }
+  var gm=S.settings.monthlyGoal*60,gy=S.settings.yearlyGoal*60;
+  var remainYear=Math.max(0,gy-prevT);
+  var remainMonths=12-idx; // 当月を含む残り月数
+  var perMonth=Math.ceil(remainYear/remainMonths);
+  return{prevT:prevT,prevElapsed:prevElapsed,
+         prevPace:prevT-prevElapsed*gm,
+         needMonth:Math.min(gm,remainYear),
+         remainYear:remainYear,remainMonths:remainMonths,
+         perMonth:perMonth,behind:perMonth>gm};
+}
 function yearStats(sy){
   var ms=monthsOfYear(sy),rows=[],actT=0,projT=0,countedT=0,countedProjT=0,creditT=0,reportT=0;
   var elapsed=0; // completed months
@@ -388,7 +406,8 @@ function render(){
 /* ---- calendar view ---- */
 function renderCal(){
   var y=cur.y,m=cur.m,st=monthStats(y,m);
-  var gMin=S.settings.monthlyGoal*60;
+  var yp=yearProgress(y,m);
+  var gMin=yp.needMonth; // 今月の必要時間(年間目標までの残りで頭打ち)
   var isCur=(y===TODAY.y&&m===TODAY.m);
   var remain=Math.max(0,gMin-st.counted);
   var remDays=isCur?(st.days-TODAY.d+1):null;
@@ -403,9 +422,13 @@ function renderCal(){
 
   // summary card
   h+='<div class="card">';
-  h+='<h3>'+esc(S.settings.role)+' ─ 月間目標 '+S.settings.monthlyGoal+'h</h3>';
+  h+='<h3>'+esc(S.settings.role)+' ─ 今月の必要 '+fmtMin(gMin)
+    +(gMin!==S.settings.monthlyGoal*60?'<span style="font-weight:400">(年間'+S.settings.yearlyGoal+'hまで残り'+fmtMin(yp.remainYear)+')</span>':'')
+    +'</h3>';
   h+='<div class="statrow">'
     +'<span class="pill goal">実績 '+fmtMin(st.act)+'</span>'
+    +(yp.prevElapsed?(yp.prevPace>=0?'<span class="pill ok">前月まで +'+fmtMin(yp.prevPace)+'</span>'
+                                    :'<span class="pill miss">前月まで −'+fmtMin(-yp.prevPace)+'</span>'):'')
     +'<span class="pill plan">予定合計 '+fmtMin(st.goal)+'</span>'
     +(st.credit?'<span class="pill neutral">考慮 +'+fmtMin(st.credit)+'</span>':'')
     +(st.studies?'<span class="pill neutral">📖 研究 '+st.studies+'</span>':'')
@@ -423,7 +446,7 @@ function renderCal(){
     +'</div><div class="legend">'
     +'<span><i style="background:var(--goal)"></i>'+(st.credit?'対象時間(考慮込み)':'実績')+'</span>'
     +'<span><i style="background:repeating-linear-gradient(-45deg,#E4ECF7,#E4ECF7 3px,#D3E0F2 3px,#D3E0F2 6px)"></i>着地予測</span>'
-    +'<span><i style="background:var(--ink);width:3px;border-radius:1px"></i>目標 '+S.settings.monthlyGoal+'h</span>'
+    +'<span><i style="background:var(--ink);width:3px;border-radius:1px"></i>必要 '+fmtMin(gMin)+'</span>'
     +'</div></div>';
 
   h+='<div class="hint">着地予測 <b>'+fmtMin(st.countedProj)+'</b> '
@@ -435,8 +458,11 @@ function renderCal(){
     h+='<div class="hint" style="margin-top:5px">前月から繰り越し <b>'+st.carryIn+'分</b> ・ 今月の報告値 <b>'+fmtJa(st.reportMin)+'</b> ・ 翌月へ <b>'+st.carryOut+'分</b></div>';
   }
   if(isCur){
-    h+='<div class="hint" style="margin-top:5px">残り <b>'+fmtMin(remain)+'</b>(あと'+remDays+'日'
+    h+='<div class="hint" style="margin-top:5px">今月あと <b>'+fmtMin(remain)+'</b>(あと'+remDays+'日'
       +(perDay!=null&&remain>0?' ・ 1日あたり <b>'+fmtMin(perDay)+'</b>':'')+')</div>';
+  }
+  if(yp.behind){
+    h+='<div class="hint" style="margin-top:5px">年間'+S.settings.yearlyGoal+'hには残り'+yp.remainMonths+'か月で <b>'+fmtMin(yp.remainYear)+'</b>(1か月あたり <b>'+fmtMin(yp.perMonth)+'</b>)必要です。</div>';
   }
   if(st.direct){
     h+='<div class="hint" style="margin-top:5px">実績のうち <b>'+fmtMin(st.direct)+'</b> は月合計の直接入力分です。</div>';
@@ -494,8 +520,9 @@ function moveMonth(dir){
 function renderYear(){
   var sy=yearShown,ys=yearStats(sy);
   var gMin=S.settings.yearlyGoal*60;
-  var elapsedGoal=ys.elapsed*S.settings.monthlyGoal*60;
-  var pace=ys.countedT-elapsedGoal;
+  var yp=yearProgress(TODAY.y,TODAY.m); // 前月までの貯金/借金と残り必要
+  var sameYear=(svcYearStart(TODAY.y,TODAY.m)===sy);
+  var pace=sameYear?yp.prevPace:(ys.countedT-ys.elapsed*S.settings.monthlyGoal*60);
   var projDiff=ys.countedProjT-gMin;
 
   var h='';
@@ -508,8 +535,8 @@ function renderYear(){
   h+='<div class="statrow">'
     +'<span class="pill goal">累計実績 '+fmtMin(ys.actT)+'</span>'
     +(ys.creditT?'<span class="pill neutral">対象時間 '+fmtMin(ys.countedT)+'</span>':'')
-    +(pace>=0?'<span class="pill ok">ペース +'+fmtMin(pace)+'</span>'
-             :'<span class="pill miss">ペース −'+fmtMin(-pace)+'</span>')
+    +(pace>=0?'<span class="pill ok">'+(sameYear?'前月まで':'ペース')+' +'+fmtMin(pace)+'</span>'
+             :'<span class="pill miss">'+(sameYear?'前月まで':'ペース')+' −'+fmtMin(-pace)+'</span>')
     +'</div>';
   var maxV=Math.max(gMin,ys.countedProjT,ys.countedT,1);
   h+='<div class="pace"><div class="track">'
@@ -525,7 +552,13 @@ function renderYear(){
     +(projDiff>=0?'<span class="pill ok" style="font-size:12px;padding:1px 8px">+'+fmtMin(projDiff)+' 達成見込み</span>'
                  :'<span class="pill miss" style="font-size:12px;padding:1px 8px">−'+fmtMin(-projDiff)+' 不足見込み</span>')
     +'</div>';
-  h+='<div class="hint" style="margin-top:4px">ペース差は「経過した月数 × '+S.settings.monthlyGoal+'h」との比較です。</div>';
+  if(sameYear){
+    h+='<div class="hint" style="margin-top:4px">年間'+S.settings.yearlyGoal+'hまで残り <b>'+fmtMin(yp.remainYear)+'</b>'
+      +(yp.remainYear>0?'(残り'+yp.remainMonths+'か月 ・ 1か月あたり <b>'+fmtMin(yp.perMonth)+'</b>)':'')+'</div>';
+    h+='<div class="hint" style="margin-top:4px">「前月まで」は今月を除いた累計と「経過した月数 × '+S.settings.monthlyGoal+'h」との差です。</div>';
+  }else{
+    h+='<div class="hint" style="margin-top:4px">ペース差は「経過した月数 × '+S.settings.monthlyGoal+'h」との比較です。</div>';
+  }
   if(ys.goalFilled){
     h+='<div class="hint" style="margin-top:4px">着地予測は、予定のない今月分を現在のペース、未入力の将来月を月間目標'+S.settings.monthlyGoal+'hとして換算しています。</div>';
   }
