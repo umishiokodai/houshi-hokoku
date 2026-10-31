@@ -312,13 +312,13 @@ function monthStats(y,m){
     if(ug&&e.g)goal+=e.g;
     if(e.a!=null){act+=e.a;proj+=e.a;}
     else if(ug&&e.g&&k>=TODAY_KEY){proj+=e.g;fg+=e.g;}
-    if(e.s)studies=Math.max(studies,e.s);
+    if(e.s)studies+=e.s; // 日別の入力件数を合計（同じ研究は月内で1回だけ入力する）
   }
   var direct=0,credit=0,me=S.monthly[y+'-'+pad(m)];
   if(me){
     if(me.a){direct=me.a;act+=me.a;proj+=me.a;}
     if(me.c)credit=me.c;
-    if(me.s)studies=Math.max(studies,me.s);
+    if(me.s)studies=Math.max(studies,me.s); // 月単位の入力は月全体の件数。日別合計と重複加算しない
   }
   // 今月で予定が未入力なら、日割りペースで月末を外挿
   var paced=false;
@@ -547,15 +547,17 @@ function renderYear(){
 
   h+='<div class="card"><h3>年間目標 '+S.settings.yearlyGoal+'h</h3>';
   h+='<div class="statrow">'
-    +'<span class="pill goal">累計実績 '+fmtMin(ys.actT)+'</span>'
+    +'<span class="pill goal">累計実績 '+fmtMin(ys.reportT)+'</span>'
     +(ys.creditT?'<span class="pill neutral">対象時間 '+fmtMin(ys.countedT)+'</span>':'')
     +(pace>=0?'<span class="pill ok">'+(sameYear?'前月まで':'ペース')+' +'+fmtMin(pace)+'</span>'
              :'<span class="pill miss">'+(sameYear?'前月まで':'ペース')+' −'+fmtMin(-pace)+'</span>')
     +'</div>';
-  var maxV=Math.max(gMin,ys.countedProjT,ys.countedT,1);
+  // 実績バーは表示する報告値の累計と揃え、考慮時間がある場合のみ対象時間を使う
+  var barAct=ys.creditT?ys.countedT:ys.reportT;
+  var maxV=Math.max(gMin,ys.countedProjT,barAct,1);
   h+='<div class="pace"><div class="track">'
     +'<div class="proj" style="width:'+Math.min(100,ys.countedProjT/maxV*100).toFixed(1)+'%"></div>'
-    +'<div class="act" style="width:'+Math.min(100,ys.countedT/maxV*100).toFixed(1)+'%"></div>'
+    +'<div class="act" style="width:'+Math.min(100,barAct/maxV*100).toFixed(1)+'%"></div>'
     +'<div class="mark" style="left:calc('+Math.min(100,gMin/maxV*100).toFixed(1)+'% - 1px)"></div>'
     +'</div><div class="legend">'
     +'<span><i style="background:var(--goal)"></i>'+(ys.creditT?'対象時間(考慮込み)':'累計実績')+'</span>'
@@ -600,7 +602,7 @@ function renderYear(){
     +'<td>'+(ys.creditT?fmtMin(ys.creditT):'')+'</td><td colspan="'+(ug?3:2)+'"></td></tr>';
   h+='</table>';
   var lastCarry=ys.rows[11].st.carryOut;
-  h+='<p class="hint" style="margin:6px 4px 4px">実績は報告値(前月からの繰り越しを含む整数時間)です。'
+  h+='<p class="hint" style="margin:6px 4px 4px">月別実績と累計実績は、前月からの繰り越しを含む各月の報告値(整数時間)です。'
     +(lastCarry?'年度末時点の翌月への繰り越しは'+lastCarry+'分です。':'')+'</p>';
   h+='</div>';
   return h;
@@ -725,8 +727,9 @@ function openDay(k){
     +'<div class="timerow"><input id="aH" type="number" inputmode="numeric" min="0" max="24" placeholder="0" value="'+a[0]+'"><span>h</span>'
     +'<input id="aM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+a[1]+'"><span>min</span>'
     +'<button class="quickclear" onclick="document.getElementById(\'aH\').value=\'\';document.getElementById(\'aM\').value=\'\'">クリア</button></div>';
-  h+='<div class="seg">聖書研究(その月に司会した人数)</div>'
+  h+='<div class="seg">聖書研究(この日に新たに数える件数)</div>'
     +'<div class="step"><button onclick="stepS(-1)" aria-label="減らす">−</button><b id="sVal">'+(e.s||0)+'</b><button onclick="stepS(1)" aria-label="増やす">＋</button></div>';
+  h+='<p class="hint" style="margin-bottom:12px">同じ研究を月内に複数日行っても、件数はその月に1回だけ入力してください。</p>';
   h+='<div class="seg">メモ</div><textarea id="nVal" placeholder="例:Christina">'+esc(e.n||'')+'</textarea>';
   h+='<div class="sheetbtns">'
     +(S.entries[k]?'<button class="del" onclick="delDay()">削除</button>':'')
@@ -787,8 +790,9 @@ function openMonthly(y,m){
     +'<div class="timerow"><input id="cH" type="number" inputmode="numeric" min="0" max="744" placeholder="0" value="'+ch+'"><span>h</span>'
     +'<input id="cM" type="number" inputmode="numeric" min="0" max="59" step="1" placeholder="0" value="'+cm+'"><span>min</span></div>';
   h+='<p class="hint" style="margin-top:6px">考慮時間は奉仕時間には含まれません。奉仕時間と合わせて月55時間まで、年間の要求時間の対象になります。</p>';
-  h+='<div class="seg">聖書研究</div>'
+  h+='<div class="seg">聖書研究(月全体の件数)</div>'
     +'<div class="step"><button onclick="stepS(-1)" aria-label="減らす">−</button><b id="sVal">'+(me.s||0)+'</b><button onclick="stepS(1)" aria-label="増やす">＋</button></div>';
+  h+='<p class="hint" style="margin-bottom:12px">日別の研究件数の合計と、この月全体の件数のうち大きい方を使います。両方を加算しません。</p>';
   h+='<div class="sheetbtns">'
     +(S.monthly[editYM]?'<button class="del" onclick="delMonthly()">削除</button>':'')
     +'<button class="cancel" onclick="closeSheet()">閉じる</button>'
